@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>ネオ・ツミツミ・コズミック</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; overflow:hidden; touch-action:manipulation; background:#050510;
+    font-family:'Segoe UI', Roboto, 'Helvetica Neue', 'Hiragino Maru Gothic ProN', sans-serif; }
+  canvas { display:block; }
+  #ui { position:fixed; inset:0; pointer-events:none;
+    display:flex; flex-direction:column; align-items:center; color:#fff; }
+  
+  #score-container { margin-top:6vh; text-align:center; }
+  #score { font-size:72px; font-weight:900; line-height:1;
+    text-shadow:0 0 20px rgba(0,255,255,0.6), 0 0 40px rgba(0,255,255,0.3);
+    transition:transform .1s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+  #score.pop { transform:scale(1.3); color:#00ffff; }
+  
+  #combo { font-size:22px; font-weight:800; height:30px; margin-top:5px;
+    color:#ff00ff; text-shadow:0 0 10px rgba(255,0,255,0.8);
+    opacity:0; transform:scale(0.8); transition:all .2s ease; }
+  #combo.show { opacity:1; transform:scale(1.1); }
+  #combo.fever { color:#ffff00; text-shadow:0 0 15px #ffff00, 0 0 30px #ff5500; animation: pulse 0.4s infinite alternate; }
+  
+  @keyframes pulse { from{transform:scale(1.1)} to{transform:scale(1.25)} }
+
+  #msg { position:absolute; bottom:10vh; text-align:center; width:100%;
+    font-size:16px; font-weight:600; letter-spacing:0.1em; color:#8af;
+    text-shadow:0 0 8px rgba(136,170,255,0.6);
+    animation:breathe 2s ease-in-out infinite; }
+  @keyframes breathe { 0%,100%{opacity:.4; transform:scale(0.98)} 50%{opacity:1; transform:scale(1)} }
+  
+  #title { position:absolute; top:22vh; width:100%; text-align:center;
+    font-size:42px; font-weight:900; letter-spacing:.2em; line-height:1.4;
+    background: linear-gradient(45deg, #00ffff, #ff00ff); -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 4px 12px rgba(0,0,0,0.5)); }
+  #title span { font-size:18px; letter-spacing:0.4em; display:block; color:#fff; -webkit-text-fill-color:#fff; opacity:0.7; margin-top:5px;}
+
+  #over { position:absolute; top:28vh; width:100%; text-align:center; display:none; background:rgba(5,5,20,0.7); padding:30px 0; backdrop-filter:blur(4px); }
+  #over h2 { font-size:32px; font-weight:900; letter-spacing:.15em; color:#ff3366; text-shadow:0 0 15px rgba(255,51,102,0.6); }
+  #best { margin-top:15px; font-size:18px; font-weight:600; color:#00ffff; text-shadow:0 0 8px rgba(0,255,255,0.4); }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="ui">
+  <div id="score-container">
+    <div id="score">0</div>
+    <div id="combo">PERFECT!</div>
+  </div>
+  <div id="title">NEO TSUMI<span>ツミツミ・コズミック</span></div>
+  <div id="over"><h2>SPACE CRASH</h2><div id="best"></div></div>
+  <div id="msg">TAP TO START</div>
+</div>
+
+<script>
+// --- サウンドエンジン (Web Audio API Synthesizer) ---
+const AudioEngine = {
+  ctx: null,
+  bpm: 120,
+  seqStep: 0,
+  intervalId: null,
+  isMuted: false,
+  notes: [57, 60, 64, 67, 69, 72, 76, 79], // Am7, Cmaj7系 スケール
+  chordProg: [0, 2, 4, 3], // 進行用シフト
+
+  init() {
+    if (this.ctx) return;
+    this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    this.startBGM();
+  },
+  
+  startBGM() {
+    let nextNoteTime = this.ctx.currentTime;
+    this.intervalId = setInterval(() => {
+      // スコアに応じてテンポと音階をサイバーに変化させる
+      let speedFactor = Math.min(score / 50, 1);
+      this.bpm = 110 + speedFactor * 40 + (combo > 5 ? 20 : 0); // フィーバーで加速
+      
+      while (nextNoteTime < this.ctx.currentTime + 0.1) {
+        if (!this.isMuted && state === 'play') {
+          this.playSeqStep(nextNoteTime);
+        }
+        nextNoteTime += 60 / this.bpm / 2; // 8分音符
+      }
+    }, 25);
+  },
+
+  playSeqStep(time) {
+    this.seqStep++;
+    let chordIdx = Math.floor(this.seqStep / 16) % this.chordProg.length;
+    let baseShift = this.chordProg[chordIdx];
+    
+    // ベースライン (1拍目と3拍目の裏など)
+    if (this.seqStep % 4 === 0 || this.seqStep % 6 === 0) {
+      let baseNote = this.notes[baseShift % this.notes.length] - 24;
+      this.osc(baseNote, 'sawtooth', 0.15, 0.18, time);
+    }
+    
+    // アルペジオメロディ (スコアが高くなると高密度・SFチックに)
+    let triggerProb = score > 20 ? 0.6 : 0.4;
+    if (combo > 5) triggerProb = 0.8; // フィーバーモード
+    
+    if (Math.random() < triggerProb && this.seqStep % 2 === 0) {
+      let noteIdx = (Math.floor(Math.random() * 4) + baseShift) % this.notes.length;
+      let note = this.notes[noteIdx] + (score > 30 ? 12 : 0);
+      this.osc(note, 'triangle', 0.06, 0.12, time);
+    }
+  },
+
+  osc(note, type, vol, duration, time) {
+    if (!this.ctx) return;
+    let osc = this.ctx.createOscillator();
+    let gain = this.ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(440 * Math.pow(2, (note - 69) / 12), time);
+    
+    gain.gain.setValueAtTime(vol, time);
+    gain.gain.exponentialRampToValueAtTime(0.001, time + duration);
+    
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start(time);
+    osc.stop(time + duration);
+  },
+
+  playHit(isPerfect, comboCount) {
+    if (!this.ctx) return;
+    let now = this.ctx.currentTime;
+    if (isPerfect) {
+      // コンボが上がると効果音のピッチが上がっていく爽快感
+      let pitchShift = Math.min(comboCount * 2, 16);
+      this.osc(72 + pitchShift, 'sine', 0.3, 0.2, now);
+      this.osc(79 + pitchShift, 'sine', 0.2, 0.25, now);
+    } else {
+      // 通常ヒット（少し重いカット音）
+      this.osc(48, 'triangle', 0.4, 0.15, now);
+      this.osc(36, 'sawtooth', 0.2, 0.1, now);
+    }
+  },
+
+  playOver() {
+    if (!this.ctx) return;
+    let now = this.ctx.currentTime;
+    let osc = this.ctx.createOscillator();
+    let gain = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(300, now);
+    osc.frequency.exponentialRampToValueAtTime(60, now + 0.6);
+    gain.gain.setValueAtTime(0.4, now);
+    gain.gain.linearRampToValueAtTime(0.001, now + 0.6);
+    osc.connect(gain); gain.connect(this.ctx.destination);
+    osc.start(now); osc.stop(now + 0.6);
+  }
+};
+
+// --- ゲームメインロジック ---
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+let W, H, DPR;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = W*DPR; cv.height = H*DPR;
+  cv.style.width = W+'px'; cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+resize(); addEventListener('resize', resize);
+
+const scoreEl=document.getElementById('score'), comboEl=document.getElementById('combo');
+const titleEl=document.getElementById('title'), msgEl=document.getElementById('msg');
+const overEl=document.getElementById('over'), bestEl=document.getElementById('best');
+
+const BOX_H = 36;
+const BASE_W = () => Math.min(W*0.65, 280);
+let state, boxes, moving, debris, particles, score, combo, camY, camTarget, hue, shake, best=0;
+
+function reset(){
+  state='title'; score=0; combo=0; debris=[]; particles=[]; shake=0;
+  hue = Math.floor(Math.random()*360);
+  camY = 0; camTarget = 0;
+  const w = BASE_W();
+  boxes = [{x:(W-w)/2, w:w, y:0, h:BOX_H*1.5, hue:hue}];
+  spawnMoving();
+  scoreEl.textContent='0';
+  titleEl.style.display='block'; overEl.style.display='none';
+  comboEl.classList.remove('show', 'fever');
+  msgEl.textContent='TAP TO JUMP IN';
+  msgEl.style.display='block';
+}
+
+function spawnMoving(){
+  const top = boxes[boxes.length-1];
+  hue = (hue + 14) % 360;
+  // フィーバー時は少しトリッキーかつスピーディに
+  const baseSpeed = Math.min(3.5 + score*0.15, 9.5);
+  const speed = combo > 5 ? baseSpeed * 1.25 : baseSpeed;
+  const fromLeft = boxes.length % 2 === 0;
+  moving = {
+    x: fromLeft ? -top.w : W,
+    w: top.w, y: top.y + top.h, h: BOX_H,
+    v: fromLeft ? speed : -speed, hue: hue
+  };
+}
+
+function createParticles(x, y, w, colorHue) {
+  for (let i = 0; i < 15; i++) {
+    particles.push({
+      x: x + Math.random() * w,
+      y: H - y + camY,
+      vx: (Math.random() - 0.5) * 6,
+      vy: (Math.random() - 0.5) * 6 - 2,
+      alpha: 1,
+      size: Math.random() * 4 + 2,
+      hue: colorHue
+    });
+  }
+}
+
+function drop(){
+  const top = boxes[boxes.length-1];
+  const left = Math.max(moving.x, top.x);
+  const right = Math.min(moving.x + moving.w, top.x + top.w);
+  const overlap = right - left;
+
+  if (overlap <= 0){ // クラッシュ・外した
+    debris.push({x:moving.x, w:moving.w, y:moving.y, h:moving.h, hue:moving.hue, vy:-2, vx:moving.v*0.5, vr:(Math.random()-.5)*0.15, r:0});
+    AudioEngine.playOver();
+    gameOver(); return;
+  }
+
+  const miss = moving.w - overlap;
+  if (miss < 8){ // PERFECT判定範囲
+    combo++;
+    AudioEngine.playHit(true, combo);
+    
+    // コンボボーナス：完璧なら土台が少し復活
+    const bonus = Math.min(top.w + (combo > 5 ? 6 : 3), BASE_W());
+    const newX = top.x - (bonus - top.w) / 2;
+    boxes.push({x: newX, w: bonus, y: moving.y, h: moving.h, hue: moving.hue, flash: 1});
+    
+    // パーティクル放出
+    createParticles(left, moving.y, overlap, moving.hue);
+
+    // フィーバー判定＆演出
+    if (combo > 5) {
+      score += 3; // フィーバーは3点加算！
+      comboEl.textContent = `FEVER COMBO ×${combo}!!`;
+      comboEl.classList.add('show', 'fever');
+    } else {
+      score += 1;
+      comboEl.textContent = combo >= 2 ? `PERFECT ×${combo}! (+2)` : 'PERFECT! (+1)';
+      if(combo >= 2) score += 1; // 連続コンボボーナス
+      comboEl.classList.add('show');
+    }
+    
+    shake = 2;
+    setTimeout(()=> { if(combo<=5) comboEl.classList.remove('show') }, 600);
+  } else {
+    // 通常ヒット（削り）
+    combo = 0;
+    comboEl.classList.remove('show', 'fever');
+    AudioEngine.playHit(false, 0);
+    
+    const cutX = moving.x < top.x ? moving.x : right;
+    debris.push({x:cutX, w:miss, y:moving.y, h:moving.h, hue:moving.hue, vy:-1, vx:(moving.x < top.x ? -2 : 2), vr:(Math.random()-.5)*0.2, r:0});
+    boxes.push({x:left, w:overlap, y:moving.y, h:moving.h, hue:moving.hue, flash:0});
+    
+    score += 1;
+    shake = Math.min(miss*0.18, 7);
+  }
+
+  scoreEl.textContent = score;
+  scoreEl.classList.add('pop');
+  setTimeout(()=>scoreEl.classList.remove('pop'), 100);
+  
+  camTarget = Math.max(0, boxes[boxes.length-1].y + BOX_H - H*0.42);
+  spawnMoving();
+}
+
+function gameOver(){
+  state='over';
+  best = Math.max(best, score);
+  overEl.style.display='block';
+  bestEl.textContent = `SCORE: ${score}  /  BEST: ${best}`;
+  msgEl.textContent = 'TAP TO RESTART';
+  msgEl.style.display='block';
+}
+
+function tap(e){
+  if(e.type === 'keydown') { AudioEngine.init(); } // キーボード起動用
+  if (state==='title'){ 
+    AudioEngine.init();
+    if(AudioEngine.ctx && AudioEngine.ctx.state === 'suspended') AudioEngine.ctx.resume();
+    state='play'; titleEl.style.display='none'; msgEl.style.display='none'; return; 
+  }
+  if (state==='play'){ drop(); return; }
+  if (state==='over'){ reset(); }
+}
+// マウス・タッチ操作の競合防止策を含めたイベント登録
+addEventListener('pointerdown', e => { e.preventDefault(); tap(e); }, { passive: false });
+addEventListener('keydown', e=>{ if(e.code==='Space'||e.code==='Enter'){ e.preventDefault(); tap(e); }});
+
+function drawBox(b, glow){
+  const sy = H - (b.y + b.h) + camY;
+  
+  // ネオン風のサイバーな質感表現
+  if (glow) {
+    ctx.shadowBlur = combo > 5 ? 20 : 10;
+    ctx.shadowColor = `hsl(${b.hue}, 100%, 60%)`;
+  } else {
+    ctx.shadowBlur = 0;
+  }
+  
+  // メインボックス面
+  ctx.fillStyle = `hsl(${b.hue}, 85%, 55%)`;
+  ctx.fillRect(b.x, sy, b.w, b.h);
+  ctx.shadowBlur = 0; // シャドウリセット
+
+  // ネオンエッジ（上部ハイライト）
+  ctx.fillStyle = `hsl(${b.hue}, 100%, 75%)`;
+  ctx.fillRect(b.x, sy, b.w, 4);
+
+  // グラデーション風のサイドシャドウ
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+  ctx.fillRect(b.x, sy + b.h - 5, b.w, 5);
+
+  // ジャストヒット時のフラッシュ演出
+  if (glow && b.flash > 0){
+    ctx.fillStyle = `rgba(255,255,255,${b.flash})`;
+    ctx.fillRect(b.x, sy, b.w, b.h);
+    b.flash -= 0.06;
+  }
+}
+
+function loop(){
+  requestAnimationFrame(loop);
+  
+  // 独創的なコズミック背景グラデーション（高くなるほど宇宙、深宇宙へ）
+  const progress = Math.min(score / 50, 1);
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  
+  // サイバーパープルからコズミックネイビーへの深化
+  g.addColorStop(0, `hsl(${260 - progress*40}, ${50 + progress*30}%, ${12 - progress*10}%)`);
+  g.addColorStop(1, `hsl(${320 - progress*100}, ${60}%, ${6 - progress*4}%)`);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  // 背景の星＆デジタルノイズの星屑
+  ctx.fillStyle = `rgba(0, 255, 255, ${0.15 + progress * 0.4})`;
+  for(let i=0; i<30; i++){
+    const sx = (i * 243.5) % W;
+    const sy2 = ((i * 127.3) + camY*0.3) % H; // カメラに応じてスクロール
+    const size = (i % 3 === 0) ? 2.5 : 1.5;
+    ctx.fillRect(sx, sy2, size, size);
+  }
+
+  // フィーバー時の画面背景フラッシュエフェクト
+  if (combo > 5 && Math.random() < 0.15) {
+    ctx.fillStyle = 'rgba(255, 0, 255, 0.04)';
+    ctx.fillRect(0,0,W,H);
+  }
+
+  camY += (camTarget - camY) * 0.1; // カメラのスムーズ追従
+  
+  ctx.save();
+  if (shake > 0){ 
+    ctx.translate((Math.random()-.5)*shake, (Math.random()-.5)*shake); 
+    shake *= 0.88; 
+  }
+
+  // 積み上がったブロックの描画
+  for (const b of boxes) {
+    // 画面外に沈んだ古いブロックは描画をスキップして軽量化
+    if (H - b.y + camY < -100) continue;
+    drawBox(b, true);
+  }
+
+  // 弾け飛ぶ光の粒子（パーティクル）の更新・描画
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.alpha -= 0.03;
+    if (p.alpha <= 0) {
+      particles.splice(i, 1);
+      continue;
+    }
+    ctx.fillStyle = `hsla(${p.hue}, 100%, 70%, ${p.alpha})`;
+    ctx.fillRect(p.x, p.y, p.size, p.size);
+  }
+
+  // 落下する切れ端
+  for (let i=debris.length-1; i>=0; i--){
+    const d = debris[i];
+    d.vy += 0.4; d.x += d.vx; d.y -= d.vy; d.r += d.vr;
+    const sy = H - (d.y + d.h) + camY;
+    ctx.save();
+    ctx.translate(d.x + d.w/2, sy + d.h/2);
+    ctx.rotate(d.r);
+    ctx.fillStyle = `hsl(${d.hue}, 70%, 40%)`;
+    ctx.fillRect(-d.w/2, -d.h/2, d.w, d.h);
+    ctx.restore();
+    if (sy > H + 100) debris.splice(i,1);
+  }
+
+  // 動いているブロック
+  if (state === 'play'){
+    moving.x += moving.v;
+    if (moving.x < -moving.w + 20) moving.v = Math.abs(moving.v);
+    if (moving.x > W - 20) moving.v = -Math.abs(moving.v);
+    drawBox(moving, false);
+  }
+  ctx.restore();
+}
+
+reset();
+loop();
+</script>
+</body>
+</html>
