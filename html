@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>築城！ - 積み城王国建設ゲーム</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; overflow:hidden; touch-action:manipulation; background:#111;
+    font-family:'Hiragino Maru Gothic ProN','BIZ UDGothic','Yu Gothic',sans-serif; }
+  canvas { display:block; width:100vw; height:100vh; }
+  
+  /* UIレイアウト */
+  #ui { position:fixed; inset:0; pointer-events:none;
+    display:flex; flex-direction:column; align-items:center; color:#fff; z-index: 10; }
+  
+  #header { width:100%; padding:20px; display:flex; justify-content:space-between; align-items:center; }
+  .ui-text { font-weight:800; text-shadow:0 2px 6px rgba(0,0,0,0.7); font-size:16px; }
+  #current-rank { color:#ffd700; background:rgba(0,0,0,0.4); padding:4px 12px; border-radius:20px; border:1px solid #ffd700; }
+
+  #score-display { font-size:64px; font-weight:900; text-align:center; margin-top:2vh;
+    text-shadow:0 4px 12px rgba(0,0,0,0.6);
+    transition:transform .1s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+  #score-display.pop { transform:scale(1.25); color:#ffd700; }
+  
+  /* 特殊演出通知 */
+  #notify-msg { font-size:28px; font-weight:900; color:#fff; height:40px; margin-top:10px;
+    text-shadow:0 0 10px #ff0055, 0 0 20px #ff0055; opacity:0; transform:scale(0.7); transition:all .2s; }
+  #notify-msg.show { opacity:1; transform:scale(1.1); }
+  #notify-msg.rankup { color:#ffff00; text-shadow:0 0 15px #ffaa00, 0 0 30px #ff5500; animation: bounce 0.4s infinite alternate; }
+  @keyframes bounce { from{transform:scale(1.1)} to{transform:scale(1.2)} }
+
+  /* タイトル画面 */
+  #title-screen { position:absolute; top:25vh; text-align:center; width:100%; }
+  #title-screen h1 { font-size:48px; font-weight:900; letter-spacing:.15em; color:#fff;
+    background: linear-gradient(to bottom, #fff 40%, #ffd700 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 4px 8px rgba(0,0,0,0.8)); }
+  #title-screen p { font-size:16px; font-weight:600; color:#e0e0ff; margin-top:10px; text-shadow:0 2px 6px #000; letter-spacing:0.1em; }
+
+  /* ゲームオーバーリザルト */
+  #over-screen { position:absolute; top:22vh; width:90%; max-width:400px; text-align:center; 
+    display:none; background:rgba(20,15,30,0.85); border:3px solid #ffd700; border-radius:16px; padding:25px 20px;
+    box-shadow:0 10px 30px rgba(0,0,0,0.6); backdrop-filter:blur(6px); }
+  #over-screen h2 { font-size:22px; font-weight:800; color:#ff4466; letter-spacing:.1em; text-shadow:0 2px 4px #000; }
+  #final-rank { font-size:40px; font-weight:900; color:#ffd700; margin:12px 0; text-shadow:0 0 15px rgba(255,215,0,0.5); }
+  .result-detail { font-size:16px; font-weight:600; color:#ddd; margin:4px 0; text-shadow:0 1px 3px #000; }
+  #next-rank-info { font-size:15px; font-weight:700; color:#ffcc00; margin-top:15px; padding:6px; background:rgba(0,0,0,0.4); border-radius:8px; }
+
+  #tap-prompt { position:absolute; bottom:12vh; text-align:center; width:100%;
+    font-size:16px; font-weight:700; letter-spacing:0.1em; color:#fff; text-shadow:0 2px 6px #000;
+    animation:breathe 2s ease-in-out infinite; }
+  @keyframes breathe { 0%,100%{opacity:.4} 50%{opacity:1} }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="ui">
+  <div id="header">
+    <div class="ui-text">👑 BEST: <span id="best-score">0</span></div>
+    <div id="current-rank" class="ui-text">旅人</div>
+  </div>
+  <div id="score-display">0</div>
+  <div id="notify-msg">PERFECT!</div>
+  
+  <div id="title-screen">
+    <h1>築城！</h1>
+    <p>〜 高く積んで王国を発展させよ 〜</p>
+  </div>
+  
+  <div id="over-screen">
+    <h2>【 国王からの評価 】</h2>
+    <div id="final-rank">開拓者</div>
+    <div class="result-detail" id="res-score">スコア: 0</div>
+    <div class="result-detail" id="res-best"></div>
+    <div id="next-rank-info">あと 10 ポイントで「村人」</div>
+  </div>
+  
+  <div id="tap-prompt">画面をタップしてブロックを投下</div>
+</div>
+
+<script>
+// --- 称号データ定義 ---
+const RANKS = [
+  { score: 250, title: "伝説 of 王" }, // 350から少し調整し爽快に届きやすく調整
+  { score: 210, title: "皇帝" },
+  { score: 160, title: "国王" },
+  { score: 120, title: "公爵" },
+  { score: 90, title: "大将軍" },
+  { score: 70, title: "将軍" },
+  { score: 55, title: "隊長" },
+  { score: 40, title: "騎士" },
+  { score: 30, title: "兵士" },
+  { score: 20, title: "職人" },
+  { score: 10, title: "村人" },
+  { score: 1,  title: "開拓者" },
+  { score: 0,  title: "旅人" }
+];
+
+function getRank(s) {
+  return RANKS.find(r => s >= r.score) || RANKS[RANKS.length - 1];
+}
+function getNextRank(s) {
+  for (let i = RANKS.length - 1; i >= 0; i--) {
+    if (RANKS[i].score > s) return RANKS[i];
+  }
+  return null;
+}
+
+// --- ゲーム状態管理 ---
+let state = 'title';
+let boxes = [];
+let moving = null;
+let debris = [];
+let particles = [];
+let fireworks = [];
+let kingdomDecorations = []; // 背景に建つ家や木
+let score = 0;
+let combo = 0;
+let camY = 0;
+let camTarget = 0;
+let shake = 0;
+let best = 0;
+
+const BOX_H = 36;
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+let W, H, DPR;
+
+const scoreEl = document.getElementById('score-display');
+const notifyEl = document.getElementById('notify-msg');
+const currentRankEl = document.getElementById('current-rank');
+const titleScreen = document.getElementById('title-screen');
+const overScreen = document.getElementById('over-screen');
+const tapPrompt = document.getElementById('tap-prompt');
+
+const finalRankEl = document.getElementById('final-rank');
+const resScoreEl = document.getElementById('res-score');
+const resBestEl = document.getElementById('res-best');
+const nextRankInfoEl = document.getElementById('next-rank-info');
+const bestScoreEl = document.getElementById('best-score');
+
+const BASE_W = () => Math.min(W * 0.6, 260);
+
+// --- サウンドエンジン (Web Audio API Synthesizer) ---
+const AudioEngine = {
+  ctx: null,
+  init() {
+    if (this.ctx) return;
+    try { this.ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {}
+  },
+  osc(freq, type, vol, duration, delay = 0) {
+    if (!this.ctx) return;
+    let now = this.ctx.currentTime + delay;
+    let osc = this.ctx.createOscillator();
+    let gain = this.ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, now);
+    gain.gain.setValueAtTime(vol, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+    osc.connect(gain); gain.connect(this.ctx.destination);
+    osc.start(now); osc.stop(now + duration);
+  },
+  playPlace(isPerfect, comboCount) {
+    this.init();
+    if (isPerfect) {
+      // コンボで音階上昇する綺麗なクリスタル音
+      let freq = 440 * Math.pow(1.059463, Math.min(comboCount, 12));
+      this.osc(freq, 'sine', 0.2, 0.25);
+      this.osc(freq * 1.5, 'sine', 0.1, 0.2);
+    } else {
+      // カキィン！という木や石の物理的な音
+      this.osc(280, 'triangle', 0.3, 0.12);
+      this.osc(140, 'sawtooth', 0.15, 0.08);
+    }
+  },
+  playRankUp() {
+    this.init(); // ファンファーーレ！
+    let now = 0;
+    const f = [523.25, 659.25, 783.99, 1046.50]; // C5, E5, G5, C6
+    f.forEach((freq, idx) => {
+      this.osc(freq, 'square', 0.12, 0.3, idx * 0.08);
+    });
+  },
+  playCrash() {
+    this.init(); // ガラガラと城が崩れる音
+    let now = this.ctx ? this.ctx.currentTime : 0;
+    for(let i=0; i<6; i++) {
+      this.osc(180 - i*25, 'sawtooth', 0.2, 0.4, i*0.04);
+      this.osc(90, 'triangle', 0.3, 0.3, i*0.05);
+    }
+  }
+};
+
+// --- リサイズ処理 ---
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = W * DPR; cv.height = H * DPR;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+resize(); window.addEventListener('resize', resize);
+
+// --- 初期化 & リセット ---
+function reset(){
+  state = 'title'; score = 0; combo = 0; debris = []; particles = []; fireworks = [];
+  camY = 0; camTarget = 0; shake = 0;
+  
+  const w = BASE_W();
+  boxes = [{x: (W - w) / 2, w: w, y: 0, h: BOX_H * 1.5, type: 'base', flash: 0}];
+  kingdomDecorations = [];
+  
+  // 草原の初期装飾（小さな木をいくつか配置）
+  for(let i=0; i<8; i++){
+    kingdomDecorations.push({ x: Math.random()*W, type: 'tree', size: Math.random()*15+15 });
+  }
+  
+  scoreEl.textContent = '0';
+  currentRankEl.textContent = getRank(0).title;
+  titleScreen.style.display = 'block'; overScreen.style.display = 'none';
+  notifyEl.classList.remove('show', 'rankup');
+  tapPrompt.textContent = '画面をタップして築城開始！';
+}
+
+function spawnMoving(){
+  const top = boxes[boxes.length - 1];
+  const speed = Math.min(3.2 + score * 0.15, 9.0);
+  const fromLeft = boxes.length % 2 === 0;
+  
+  // スコアに応じて建築パーツ（外見）を変化させる
+  let bType = 'stone';
+  if(score > 60) bType = 'roof';
+  else if(score > 40) bType = 'window';
+  else if(score > 20) bType = 'brick';
+  
+  moving = {
+    x: fromLeft ? -top.w : W, w: top.w, y: top.y + top.h, h: BOX_H,
+    v: fromLeft ? speed : -speed, type: bType
+  };
+}
+
+// エフェクト生成群
+function createExplosion(x, y, w, color) {
+  for (let i = 0; i < 12; i++) {
+    particles.push({
+      x: x + Math.random() * w, y: H - y + camY,
+      vx: (Math.random() - 0.5) * 5, vy: (Math.random() - 0.5) * 4 - 1,
+      alpha: 1, size: Math.random() * 3 + 2, color: color
+    });
+  }
+}
+function launchFirework() {
+  fireworks.push({
+    x: Math.random() * W, y: Math.random() * (H * 0.4) + 50,
+    r: 0, maxR: Math.random() * 40 + 30, color: `hsl(${Math.random()*360},100%,60%)`, alpha: 1
+  });
+}
+
+// 建築発展（背景の賑やかし）
+function evolveKingdom() {
+  if (score % 4 === 0) {
+    let types = ['house', 'tree', 'fence'];
+    if(score > 30) types.push('mini-tower');
+    if(score > 50) types.push('flag');
+    let chosen = types[Math.floor(Math.random()*types.length)];
+    kingdomDecorations.push({
+      x: Math.random() * (W - 40) + 20, type: chosen, size: Math.random() * 20 + 20
+    });
+  }
+}
+
+function drop(){
+  const top = boxes[boxes.length - 1];
+  const left = Math.max(moving.x, top.x);
+  const right = Math.min(moving.x + moving.w, top.x + top.w);
+  const overlap = right - left;
+
+  if (overlap <= 0){ // 完全に外して崩壊
+    debris.push({x: moving.x, w: moving.w, y: moving.y, h: moving.h, type: moving.type, vy: -1, vx: moving.v*0.4, vr: 0.1, r: 0});
+    AudioEngine.playCrash();
+    gameOver(); return;
+  }
+
+  const oldRank = getRank(score);
+  const miss = moving.w - overlap;
+  
+  if (miss < 8){ // ジャスト・パーフェクト
+    combo++;
+    AudioEngine.playPlace(true, combo);
+    
+    // パーフェクト時は土台がわずかに補強され広がる（救済＆爽快要素）
+    const bonus = Math.min(top.w + 4, BASE_W());
+    const newX = top.x - (bonus - top.w) / 2;
+    boxes.push({x: newX, w: bonus, y: moving.y, h: moving.h, type: moving.type, flash: 1});
+    createExplosion(left, moving.y, overlap, '#ffd700');
+    
+    notifyEl.textContent = combo >= 2 ? `みごと！ PERFECT ×${combo}` : 'みごと！ PERFECT';
+    notifyEl.className = 'show';
+    setTimeout(() => { if(state==='play') notifyEl.className = '' }, 600);
+    shake = 1;
+  } else { // 削りヒット
+    combo = 0;
+    notifyEl.className = '';
+    AudioEngine.playPlace(false, 0);
+    
+    const cutX = moving.x < top.x ? moving.x : right;
+    debris.push({x: cutX, w: miss, y: moving.y, h: moving.h, type: moving.type, vy: -0.5, vx: (moving.x < top.x ? -2 : 2), vr: 0.08, r: 0});
+    boxes.push({x: left, w: overlap, y: moving.y, h: moving.h, type: moving.type, flash: 0});
+    shake = Math.min(miss * 0.15, 6);
+  }
+
+  score++;
+  scoreEl.textContent = score;
+  scoreEl.classList.add('pop');
+  setTimeout(() => scoreEl.classList.remove('pop'), 100);
+  
+  // 称号が上がる瞬間のリアルタイム演出
+  const newRank = getRank(score);
+  if(newRank.title !== oldRank.title) {
+    AudioEngine.playRankUp();
+    notifyEl.textContent = `👑 昇格!! 👑【${newRank.title}】`;
+    notifyEl.className = 'show rankup';
+    shake = 8;
+    currentRankEl.textContent = newRank.title;
+    if(score > 40) launchFirework();
+  }
+
+  evolveKingdom();
+  if(score > 60 && Math.random() < 0.25) launchFirework(); // 高スコアで定期的に花火
+  
+  camTarget = Math.max(0, boxes[boxes.length - 1].y + BOX_H - H * 0.45);
+  spawnMoving();
+}
+
+function gameOver(){
+  state = 'over';
+  best = Math.max(best, score);
+  bestScoreEl.textContent = best;
+  
+  const curRank = getRank(score);
+  const nextRank = getNextRank(score);
+  
+  finalRankEl.textContent = curRank.title;
+  resScoreEl.textContent = `築き上げた高さ: ${score} 階`;
+  resBestEl.textContent = score === best && score > 0 ? "🎉 ベストスコア更新！ 🎉" : `（これまでの最高: ${best} 階）`;
+  
+  if (nextRank) {
+    const diff = nextRank.score - score;
+    nextRankInfoEl.textContent = `あと ${diff} ポイントで「${nextRank.title}」へ昇格！`;
+    nextRankInfoEl.style.display = 'block';
+  } else {
+    nextRankInfoEl.textContent = `👑 おめでとうございます！国を極めました！`;
+  }
+  
+  overScreen.style.display = 'block';
+  tapPrompt.textContent = 'タップして新しい国を築く';
+}
+
+function tap(e){
+  AudioEngine.init();
+  if (AudioEngine.ctx && AudioEngine.ctx.state === 'suspended') AudioEngine.ctx.resume();
+
+  if (state === 'title'){ 
+    state = 'play'; 
+    titleScreen.style.display = 'none'; 
+    spawnMoving(); 
+    return; 
+  }
+  if (state === 'play'){ drop(); return; }
+  if (state === 'over'){ reset(); }
+}
+
+window.addEventListener('pointerdown', tap);
+window.addEventListener('keydown', e => { if(e.code==='Space'||e.code==='Enter'){ e.preventDefault(); tap(); }});
+
+// --- グラフィック描画補助関数 ---
+function drawBlockPattern(b, sy) {
+  // 指示書に基づくパーツごとの固有デザイン描画
+  if (b.type === 'base') { // 城の土台（石垣調）
+    ctx.fillStyle = '#4a4d5a'; ctx.fillRect(b.x, sy, b.w, b.h);
+    ctx.fillStyle = '#383a44';
+    for(let i=10; i<b.w; i+=30) ctx.fillRect(b.x+i, sy, 3, b.h);
+  } 
+  else if (b.type === 'stone') { // 通常の石ブロック
+    ctx.fillStyle = '#7a7f95'; ctx.fillRect(b.x, sy, b.w, b.h);
+    ctx.fillStyle = '#9499b1'; ctx.fillRect(b.x, sy, b.w, 4); // ハイライト
+    ctx.fillStyle = '#5c5f70';
+    for(let i=15; i<b.w; i+=40) ctx.fillRect(b.x+i, sy+4, 2, b.h-4);
+  } 
+  else if (b.type === 'brick') { // レンガ壁調
+    ctx.fillStyle = '#b5654d'; ctx.fillRect(b.x, sy, b.w, b.h);
+    ctx.fillStyle = '#8f4a36';
+    for(let j=8; j<b.h; j+=12) {
+      ctx.fillRect(b.x, sy+j, b.w, 2);
+      let offset = (j%2===0)?15:0;
+      for(let i=offset; i<b.w; i+=30) ctx.fillRect(b.x+i, sy+j-8, 2, 8);
+    }
+  } 
+  else if (b.type === 'window') { // 窓付きの塔壁
+    ctx.fillStyle = '#8fa3ad'; ctx.fillRect(b.x, sy, b.w, b.h);
+    ctx.fillStyle = '#222d3d'; // 窓
+    for(let i=20; i<b.w-10; i+=40) ctx.fillRect(b.x+i, sy+8, 12, 16);
+  } 
+  else if (b.type === 'roof') { // 屋根（最高層付近）
+    ctx.fillStyle = '#d94b4b'; ctx.fillRect(b.x, sy, b.w, b.h);
+    ctx.fillStyle = '#f27474'; ctx.fillRect(b.x, sy, b.w, 4);
+    // 瓦の斜線ライン
+    ctx.strokeStyle = '#a63232'; ctx.lineWidth = 1.5;
+    for(let i=0; i<b.w; i+=15) {
+      ctx.beginPath(); ctx.moveTo(b.x+i, sy); ctx.lineTo(b.x+i+8, sy+b.h); ctx.stroke();
+    }
+  }
+  
+  // 天辺（最高段）に王冠マークをシンボルとして描く
+  if (state === 'play' && b === boxes[boxes.length-1] && score >= 80) {
+    ctx.fillStyle = '#ffcc00';
+    ctx.beginPath();
+    ctx.moveTo(b.x+b.w/2-12, sy-2); ctx.lineTo(b.x+b.w/2-16, sy-14); ctx.lineTo(b.x+b.w/2-6, sy-8);
+    ctx.lineTo(b.x+b.w/2, sy-18); ctx.lineTo(b.x+b.w/2+6, sy-8); ctx.lineTo(b.x+b.w/2+16, sy-14);
+    ctx.lineTo(b.x+b.w/2+12, sy-2); ctx.fill();
+  }
+}
+
+function drawBox(b, isPlaced){
+  const sy = H - (b.y + b.h) + camY;
+  if (sy > H + 50 || sy < -100) return; // 画面外シザリング
+  
+  ctx.save();
+  // パーフェクトの輝きシャドウ
+  if (isPlaced && b.flash > 0) {
+    ctx.shadowBlur = 15; ctx.shadowColor = '#ffd700';
+  }
+  
+  drawBlockPattern(b, sy);
+  ctx.restore();
+
+  // 上面の立体エッジ
+  ctx.fillStyle = 'rgba(255,255,255,0.25)'; ctx.fillRect(b.x, sy, b.w, 3);
+  // 底面の影エッジ
+  ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(b.x, sy + b.h - 4, b.w, 4);
+
+  // ジャスト配置時の一瞬のホワイトフラッシュ
+  if (isPlaced && b.flash > 0){
+    ctx.fillStyle = `rgba(255,255,255,${b.flash})`;
+    ctx.fillRect(b.x, sy, b.w, b.h);
+    b.flash -= 0.05;
+  }
+}
+
+// --- メインループ ---
+function loop(){
+  requestAnimationFrame(loop);
+  
+  // 背景演出：スコアに応じて「青空」からだんだんと「厳かな夕暮れ」「夜の王城」へと変化
+  const t = Math.min(score / 60, 1);
+  const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
+  bgGrad.addColorStop(0, `hsl(${210 - t*40}, ${60+t*10}%, ${65 - t*55}%)`);
+  bgGrad.addColorStop(1, `hsl(${140 - t*90}, ${50}%, ${80 - t*65}%)`);
+  ctx.fillStyle = bgGrad; ctx.fillRect(0, 0, W, H);
+
+  // 最下部の草原ベース面
+  const groundY = H + camY;
+  if(groundY > 0) {
+    ctx.fillStyle = '#557a46'; ctx.fillRect(0, groundY, W, H);
+    ctx.fillStyle = '#405d33'; ctx.fillRect(0, groundY, W, 10); // 芝生境界線
+  }
+
+  // 背景の王国装飾（家や木、お城の旗）の描画
+  for (const d of kingdomDecorations) {
+    let dy = groundY - d.size;
+    if(dy > H + 50 || dy < -100) continue;
+    ctx.save();
+    if(d.type === 'tree') {
+      ctx.fillStyle = '#3f5e33'; ctx.beginPath();
+      ctx.moveTo(d.x, groundY); ctx.lineTo(d.x-d.size/2, groundY); ctx.lineTo(d.x, groundY-d.size*1.4);
+      ctx.lineTo(d.x+d.size/2, groundY); ctx.fill();
+    } else if(d.type === 'house') {
+      ctx.fillStyle = '#c7a785'; ctx.fillRect(d.x-10, groundY-15, 20, 15);
+      ctx.fillStyle = '#a63c3c'; ctx.beginPath();
+      ctx.moveTo(d.x-14, groundY-15); ctx.lineTo(d.x+14, groundY-15); ctx.lineTo(d.x, groundY-26); ctx.fill();
+    } else if(d.type === 'flag') {
+      ctx.strokeStyle = '#ddd'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(d.x, groundY); ctx.lineTo(d.x, groundY-35); ctx.stroke();
+      ctx.fillStyle = '#ff3366'; ctx.beginPath();
+      ctx.moveTo(d.x, groundY-35); ctx.lineTo(d.x+14, groundY-30); ctx.lineTo(d.x, groundY-25); ctx.fill();
+    } else { // フェンスなど
+      ctx.fillStyle = '#8c7662'; ctx.fillRect(d.x, groundY-8, 3, 8);
+      ctx.fillRect(d.x-8, groundY-6, 16, 2);
+    }
+    ctx.restore();
+  }
+
+  // カメラのスムーズ追従
+  camY += (camTarget - camY) * 0.1;
+  
+  ctx.save();
+  // 画面揺れ効果
+  if (shake > 0){ 
+    ctx.translate((Math.random() - .5) * shake, (Math.random() - .5) * shake); 
+    shake *= 0.88; 
+  }
+
+  // 設置済みブロック
+  for (const b of boxes) drawBox(b, true);
+
+  // 飛び散るパーティクル
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.alpha -= 0.025;
+    if (p.alpha <= 0) { particles.splice(i, 1); continue; }
+    ctx.fillStyle = p.color; ctx.globalAlpha = p.alpha;
+    ctx.fillRect(p.x, p.y, p.size, p.size);
+    ctx.globalAlpha = 1.0;
+  }
+
+  // 落下する削りカスの描画
+  for (let i = debris.length - 1; i >= 0; i--){
+    const d = debris[i];
+    d.vy += 0.4; d.x += d.vx; d.y -= d.vy; d.r += d.vr;
+    const sy = H - (d.y + d.h) + camY;
+    ctx.save();
+    ctx.translate(d.x + d.w/2, sy + d.h/2); ctx.rotate(d.r);
+    drawBlockPattern({x: -d.w/2, w: d.w, y:0, h: d.h, type: d.type}, 0);
+    ctx.restore();
+    if (sy > H + 100) debris.splice(i, 1);
+  }
+
+  // 花火エフェクト
+  for (let i = fireworks.length - 1; i >= 0; i--) {
+    const f = fireworks[i];
+    f.r += (f.maxR - f.r) * 0.08; f.alpha -= 0.015;
+    if(f.alpha <= 0) { fireworks.splice(i, 1); continue; }
+    ctx.save(); ctx.globalAlpha = f.alpha; ctx.strokeStyle = f.color; ctx.lineWidth = 2;
+    ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+
+  // 現在動いている投下前ブロック
+  if (state === 'play' && moving){
+    moving.x += moving.v;
+    if (moving.x < -moving.w + 10) moving.v = Math.abs(moving.v);
+    if (moving.x > W - 10) moving.v = -Math.abs(moving.v);
+    drawBox(moving, false);
+  }
+  ctx.restore();
+}
+
+// 開始
+reset();
+loop();
+</script>
+</body>
+</html>
